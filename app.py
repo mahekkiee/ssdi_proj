@@ -1,7 +1,13 @@
 """
 SSDI Stock Sector Analysis — Streamlit Dashboard
-Deploys the findings from the Jupyter notebook as an interactive web app.
+Reads the 9 NSE CSVs from the `data/` folder and runs the same analysis
+as the Jupyter notebook.
 """
+
+import os
+import glob
+import warnings
+warnings.filterwarnings("ignore")
 
 import streamlit as st
 import pandas as pd
@@ -14,8 +20,6 @@ from statsmodels.stats.multicomp import pairwise_tukeyhsd
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.tools import add_constant
 from statsmodels.multivariate.manova import MANOVA
-import warnings
-warnings.filterwarnings("ignore")
 
 # ---------------------------------------------------------------
 # Page config
@@ -25,27 +29,85 @@ st.set_page_config(
     page_icon="📈",
     layout="wide",
 )
-
 sns.set_theme(style="whitegrid")
 
 # ---------------------------------------------------------------
-# Load data (cached so it runs once)
+# Ticker / sector configuration  (same as notebook)
+# ---------------------------------------------------------------
+DATA_FOLDER = "data"
+
+TICKERS = ["TCS", "INFY", "WIPRO",
+           "HDFCBANK", "ICICIBANK", "SBIN",
+           "SUNPHARMA", "CIPLA", "DRREDDY"]
+
+SECTOR_MAP = {
+    "TCS": "IT", "INFY": "IT", "WIPRO": "IT",
+    "HDFCBANK": "Banking", "ICICIBANK": "Banking", "SBIN": "Banking",
+    "SUNPHARMA": "Pharma", "CIPLA": "Pharma", "DRREDDY": "Pharma",
+}
+
+# ---------------------------------------------------------------
+# Data loader — reads 9 NSE CSVs, cleans, adds derived columns
 # ---------------------------------------------------------------
 @st.cache_data
 def load_data():
-    df = pd.read_csv("data.csv", parse_dates=["DATE"])
-    if "DayOfWeek" not in df.columns:
-        df["DayOfWeek"] = df["DATE"].dt.day_name()
+    if not os.path.isdir(DATA_FOLDER):
+        raise FileNotFoundError(
+            f"Folder `{DATA_FOLDER}/` not found. "
+            "Create it in the repo root and upload the 9 NSE CSV files there."
+        )
+
+    all_csvs = glob.glob(os.path.join(DATA_FOLDER, "*.csv"))
+    if not all_csvs:
+        raise FileNotFoundError(
+            f"No CSV files found in `{DATA_FOLDER}/`. "
+            "Upload the 9 NSE CSV files there."
+        )
+
+    all_dfs, missing = [], []
+    for ticker in TICKERS:
+        # case-insensitive substring match on filename
+        matches = [f for f in all_csvs
+                   if ticker.upper() in os.path.basename(f).upper()]
+        if not matches:
+            missing.append(ticker)
+            continue
+        temp = pd.read_csv(matches[0], encoding="utf-8-sig", thousands=",")
+        temp.columns = temp.columns.str.strip()
+        temp["Ticker"] = ticker
+        temp["Sector"] = SECTOR_MAP[ticker]
+        all_dfs.append(temp)
+
+    if missing:
+        raise FileNotFoundError(
+            f"Could not find CSVs for these tickers in `{DATA_FOLDER}/`: "
+            f"{', '.join(missing)}. "
+            f"Make sure each ticker name appears in its filename."
+        )
+
+    df = pd.concat(all_dfs, ignore_index=True)
+
+    # Clean — same steps as the notebook
+    df["DATE"] = pd.to_datetime(df["DATE"], format="%d-%b-%Y")
+    df = df.rename(columns={
+        "OPEN": "Open", "HIGH": "High", "LOW": "Low",
+        "CLOSE": "Close", "VOLUME": "Volume",
+    })
+    df = df.sort_values(["Ticker", "DATE"]).reset_index(drop=True)
+    df = df[["DATE", "Ticker", "Sector",
+             "Open", "High", "Low", "Close", "Volume"]]
+
+    # Derived columns
+    df["Daily_Return"] = (df["Close"] - df["Open"]) / df["Open"] * 100
+    df["Daily_Range_Pct"] = (df["High"] - df["Low"]) / df["Open"] * 100
+    df["DayOfWeek"] = df["DATE"].dt.day_name()
     return df
 
 
 try:
     df = load_data()
-except FileNotFoundError:
-    st.error(
-        "❌ `data.csv` not found. Run the export cell in your notebook "
-        "(`df.to_csv('data.csv', index=False)`) and place the file in the repo root."
-    )
+except FileNotFoundError as e:
+    st.error(f"❌ {e}")
     st.stop()
 
 # ---------------------------------------------------------------
